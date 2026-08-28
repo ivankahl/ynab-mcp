@@ -17,8 +17,7 @@ A C# MCP (Model Context Protocol) server for [YNAB](https://www.ynab.com), serve
 
 ## Setup
 
-1. Create a YNAB personal access token at https://app.ynab.com/settings/developer
-2. Set it via the `YNAB_ACCESS_TOKEN` environment variable (or the `YNAB_ACCESS_TOKEN` key in `appsettings.json`)
+Create a YNAB personal access token at https://app.ynab.com/settings/developer. The token is **not** stored on the server — the client sends it with every request as an `Authorization: Bearer <token>` header.
 
 ## Run
 
@@ -36,32 +35,46 @@ http://localhost:5198/mcp
 You can override the URL:
 
 ```bash
-YNAB_ACCESS_TOKEN=your-token dotnet run --urls http://127.0.0.1:3001
+dotnet run --urls http://127.0.0.1:3001
 ```
 
 ### Docker
 
 ```bash
 docker build -t ynab-mcp .
-docker run --rm -p 8080:8080 -e YNAB_ACCESS_TOKEN=your-token ynab-mcp
+docker run --rm -p 8080:8080 ynab-mcp
 ```
 
-The MCP endpoint inside the container is `http://localhost:8080/mcp`.
+The MCP endpoint inside the container is `http://localhost:8080/mcp`. Send your YNAB token as the `Authorization: Bearer <token>` header on each request.
 
 ## Client configuration
 
-Point any Streamable HTTP MCP client at the `/mcp` endpoint. Example for clients that accept JSON config:
+Point any Streamable HTTP MCP client at the `/mcp` endpoint and send your YNAB token as the bearer header. Example for clients that accept JSON config with headers:
 
 ```json
 {
   "mcpServers": {
     "ynab": {
       "type": "http",
-      "url": "http://localhost:5198/mcp"
+      "url": "http://localhost:5198/mcp",
+      "headers": {
+        "Authorization": "Bearer your-ynab-token"
+      }
     }
   }
 }
 ```
+
+The server is stateless: each request is authenticated with the token in that request's header, so multiple API keys can use the same server instance without sharing state. `last-used` / `default` budget references are resolved by YNAB per token, so they're never shared across keys.
+
+### Authentication
+
+Authentication is enforced at the HTTP boundary on `/mcp`:
+- Missing or malformed `Authorization: Bearer` header → **401**
+- Invalid token (rejected by YNAB) → **401**
+- Valid token → **200** (MCP initialization and tools/list work)
+
+Tokens are validated against the YNAB API; results are cached briefly by a SHA-256 hash of the token. The raw token is never stored on the server — it exists only for the duration of the request.
 
 ## Notes
 

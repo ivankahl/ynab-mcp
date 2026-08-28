@@ -20,11 +20,14 @@ public sealed class YnabClient
 
     private readonly HttpClient _http;
 
-    public YnabClient(HttpClient http, string accessToken)
+    public YnabClient(HttpClient http, string? accessToken)
     {
         _http = http;
         _http.BaseAddress = new Uri(BaseUrl);
-        _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        if (!string.IsNullOrEmpty(accessToken))
+        {
+            _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        }
     }
 
     public async Task<List<BudgetSummary>> GetBudgetsAsync(CancellationToken ct = default)
