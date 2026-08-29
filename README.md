@@ -14,6 +14,7 @@ A C# MCP (Model Context Protocol) server for [YNAB](https://www.ynab.com), serve
 | `get_budget_month` | Budget + envelope amounts for any month (budgeted / activity / balance per category, income, to be budgeted) |
 | `search_transactions` | Search transactions by payee, envelope, account, amount, memo, cleared status and approved state — any combination |
 | `import_ofx_statement` | Imports OFX bank statement content into an account, matching against uncleared transactions and creating the rest as new unapproved transactions |
+| `import_discovery_miles_statement` | Imports a Discovery Miles XLSX/CSV statement into an account, converting Miles to Rand (÷ 10 by default), matching against uncleared transactions and creating the rest as new unapproved transactions |
 
 ## Setup
 
@@ -84,3 +85,4 @@ Tokens are validated against the YNAB API; results are cached briefly by a SHA-2
 - Search tools match items whose names contain all whitespace-separated words of the query, case-insensitively.
 - `search_transactions` filters are combined with AND; each filter is optional. Payee/category/account accept an id or a name fragment; amount is exact in currency units (negative = outflow).
 - `import_ofx_statement` accepts raw OFX 1.x (SGML) or OFX 2.x (XML) content. OFX entries are matched to uncleared transactions in the account with the same amount and a date within `matchDateToleranceDays` (default 5); unmatched entries are created as uncleared, unapproved transactions with `YNAB:amount:date:occurrence` import ids so re-importing the same file won't duplicate. Use `dryRun=true` to preview.
+- `import_discovery_miles_statement` accepts a Discovery Miles statement as a file path (`filePath`, .xlsx or .csv on the server machine), raw CSV text (`csvContent`) or base64 content (`fileContentBase64`). Statement amounts are Miles and are divided by `milesPerRand` (default 10, i.e. 100 miles = R10.00) to get Rand values; negative miles (redemptions) become outflows. Columns are detected from the headers (`Value Date`, `Type`, `Description`, `Additional Information`, `Miles`); the payee comes from Description (falling back to Type) and the memo joins Description and Additional Information. Rows are matched to uncleared transactions in the account with the same Rand amount within `matchDateToleranceDays` (default 5); unmatched rows are created uncleared/unapproved with `YNAB:amount:date:occurrence` import ids. Rows with 0 miles are skipped unless `includeZeroMiles=true`. Use `dryRun=true` to preview.
