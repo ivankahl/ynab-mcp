@@ -10,7 +10,9 @@ A C# MCP (Model Context Protocol) server for [YNAB](https://www.ynab.com), serve
 | `search_payees` | Free text search over payees in a budget |
 | `search_accounts` | Free text search over accounts (balances included) |
 | `search_categories` | Free text search over categories (envelopes) |
-| `create_transaction` | Creates a transaction (amount in currency units, negative = outflow) |
+| `create_transaction` | Creates a transaction (amount in currency units, negative = outflow). Supports split transactions via the `splits` parameter |
+| `update_transaction` | Updates an existing transaction. Optional fields only update when provided; can convert a non-split transaction into a split |
+| `delete_transaction` | Soft-deletes a transaction and returns its details |
 | `get_budget_month` | Budget + envelope amounts for any month (budgeted / activity / balance per category, income, to be budgeted) |
 | `search_transactions` | Search transactions by payee, envelope, account, amount, memo, cleared status and approved state — any combination |
 | `import_ofx_statement` | Imports OFX bank statement content into an account, matching against uncleared transactions and creating the rest as new unapproved transactions |
@@ -84,3 +86,5 @@ Tokens are validated against the YNAB API; results are cached briefly by a SHA-2
 - Search tools match items whose names contain all whitespace-separated words of the query, case-insensitively.
 - `search_transactions` filters are combined with AND; each filter is optional. Payee/category/account accept an id or a name fragment; amount is exact in currency units (negative = outflow).
 - `import_ofx_statement` accepts raw OFX 1.x (SGML) or OFX 2.x (XML) content. OFX entries are matched to uncleared transactions in the account with the same amount and a date within `matchDateToleranceDays` (default 5); unmatched entries are created as uncleared, unapproved transactions with `YNAB:amount:date:occurrence` import ids so re-importing the same file won't duplicate. Use `dryRun=true` to preview.
+- `create_transaction` split transactions: pass `splits` as an array of `{ categoryId, amount, payeeId?, payeeName?, memo? }`. The parent `categoryId` is ignored, the parent amount must equal the sum of the split amounts, and every split line must have a non-zero amount and a `categoryId`.
+- `update_transaction` can update any subset of fields. Passing `splits` converts a non-split transaction into a split, but updating the splits of an already-split transaction is not supported by YNAB; delete and recreate the transaction to change existing split allocations. YNAB ignores attempts to change the parent `date` or `amount` on a split transaction.
