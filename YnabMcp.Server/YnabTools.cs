@@ -375,6 +375,177 @@ public static class YnabTools
         });
     }
 
+    [McpServerTool]
+    [Description("Imports a Discovery Miles statement (XLSX or CSV) into a YNAB account. Statement amounts are Discovery Miles and are converted to Rand by dividing by milesPerRand (default 10, i.e. 100 miles = R10.00); negative miles become outflows. Each row is matched against existing uncleared transactions in the account with the same Rand amount and a date within the tolerance window; matches are reported and not duplicated. Remaining rows are created as new uncleared, unapproved transactions with YNAB import ids so re-importing the same file won't duplicate. Rows with 0 miles are skipped unless includeZeroMiles=true. Payee comes from the Description column (falling back to Type) and the memo joins Description and Additional Information. Provide the statement via filePath (xlsx/csv on the server machine), csvContent (raw CSV text) or fileContentBase64 (base64-encoded xlsx/csv). Use dryRun=true to preview without writing.")]
+    public static string ImportDiscoveryMilesStatement(
+        YnabClient ynab,
+        [Description("The budget id (from list_budgets), 'last-used' or 'default'")] string budgetId,
+        [Description("The account id to import into (from search_accounts)")] string accountId,
+        [Description("Path to the .xlsx or .csv statement file on the server machine")] string? filePath = null,
+        [Description("Raw CSV statement content")] string? csvContent = null,
+        [Description("Base64-encoded .xlsx or .csv statement content")] string? fileContentBase64 = null,
+        [Description("Miles per Rand used to convert statement amounts (default 10: 100 miles = R10.00)")] decimal milesPerRand = 10m,
+        [Description("Days of date tolerance when matching against uncleared transactions (default 5)")] int matchDateToleranceDays = 5,
+        [Description("Also import rows with 0 miles (default false)")] bool includeZeroMiles = false,
+        [Description("Preview the import without creating any transactions")] bool dryRun = false,
+        CancellationToken cancellationToken = default)
+    {
+        return Execute(() =>
+        {
+            if (milesPerRand <= 0)
+            {
+                return JsonSerializer.Serialize(new { error = "milesPerRand must be greater than 0." }, JsonOptions);
+            }
+
+            if (matchDateToleranceDays is < 0 or > 30)
+            {
+                return JsonSerializer.Serialize(new { error = "matchDateToleranceDays must be between 0 and 30." }, JsonOptions);
+            }
+
+            DiscoveryStatementParseResult parsed;
+            try
+            {
+                parsed = DiscoveryMilesParser.Parse(filePath, csvContent, fileContentBase64, includeZeroMiles);
+            }
+            catch (Exception ex) when (ex is not YnabException)
+            {
+                return JsonSerializer.Serialize(new { error = $"Could not read the statement file: {ex.Message}" }, JsonOptions);
+            }
+
+            if (parsed.Rows.Count == 0)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    error = "No transaction rows could be parsed from the statement. Expected a Discovery Miles export with 'Value Date' and 'Miles' columns.",
+                    detectedColumns = new
+                    {
+                        date = parsed.DateColumn,
+                        miles = parsed.MilesColumn,
+                        description = parsed.DescriptionColumn,
+                        additionalInformation = parsed.AdditionalInfoColumn,
+                    },
+                    skippedRows = parsed.SkippedRows.Take(10).ToList(),
+                }, JsonOptions);
+            }
+
+            var accounts = ynab.SearchAccountsAsync(budgetId, null, includeClosed: true, cancellationToken).GetAwaiter().GetResult();
+            var account = accounts.FirstOrDefault(a => string.Equals(a.Id, accountId, StringComparison.OrdinalIgnoreCase));
+            if (account is null)
+            {
+                return JsonSerializer.Serialize(new { error = $"Account '{accountId}' was not found in this budget. Use search_accounts to find valid account ids." }, JsonOptions);
+            }
+
+            decimal RandAmount(DiscoveryStatementRow row) => Math.Round(row.Miles / milesPerRand, 2, MidpointRounding.AwayFromZero);
+
+            var earliestStatementDate = parsed.Rows.Min(r => r.Date);
+            var sinceDate = earliestStatementDate.AddDays(-matchDateToleranceDays - 1).ToDateTime(TimeOnly.MinValue);
+            var existing = ynab.GetTransactionsAsync(budgetId, sinceDate, cancellationToken).GetAwaiter().GetResult()
+                .Where(t => !t.Deleted)
+                .Where(t => string.Equals(t.AccountId, account.Id, StringComparison.OrdinalIgnoreCase))
+                .Where(t => string.Equals(t.Cleared, "uncleared", StringComparison.OrdinalIgnoreCase))
+                .Select(t => (Transaction: t, Date: DateOnly.Parse(t.Date)))
+                .ToList();
+
+            var available = new List<(Transaction Transaction, DateOnly Date)>(existing);
+            var matched = new List<object>();
+            var toCreate = new List<DiscoveryStatementRow>();
+
+            foreach (var row in parsed.Rows.OrderBy(r => r.Date).ThenBy(r => r.Miles))
+            {
+                var milli = YnabClient.ToMilliunits(RandAmount(row));
+                var candidate = available
+                    .Where(x => x.Transaction.Amount == milli && Math.Abs(x.Date.DayNumber - row.Date.DayNumber) <= matchDateToleranceDays)
+                    .OrderBy(x => Math.Abs(x.Date.DayNumber - row.Date.DayNumber))
+                    .ThenBy(x => x.Date)
+                    .FirstOrDefault();
+
+                if (candidate.Transaction is not null)
+                {
+                    available.Remove(candidate);
+                    matched.Add(new
+                    {
+                        statementDate = row.Date.ToString("yyyy-MM-dd"),
+                        miles = row.Miles,
+                        randAmount = RandAmount(row),
+                        payee = row.Payee,
+                        memo = row.Memo,
+                        matchedTransactionId = candidate.Transaction.Id,
+                        matchedDate = candidate.Transaction.Date,
+                        matchedPayeeName = candidate.Transaction.PayeeName,
+                        matchedMemo = candidate.Transaction.Memo,
+                    });
+                }
+                else
+                {
+                    toCreate.Add(row);
+                }
+            }
+
+            var drafts = toCreate
+                .GroupBy(r => (Milli: YnabClient.ToMilliunits(RandAmount(r)), r.Date))
+                .SelectMany(g => g.Select((r, i) => (Row: r, ImportId: $"YNAB:{g.Key.Milli}:{r.Date:yyyy-MM-dd}:{i + 1}")))
+                .OrderBy(x => x.Row.Date)
+                .ToList();
+
+            List<Transaction>? created = null;
+            if (!dryRun && drafts.Count > 0)
+            {
+                created = ynab.CreateTransactionsAsync(budgetId, drafts.Select(x => new TransactionDraft
+                {
+                    AccountId = account.Id,
+                    Date = x.Row.Date.ToString("yyyy-MM-dd"),
+                    Amount = YnabClient.ToMilliunits(RandAmount(x.Row)),
+                    PayeeName = x.Row.Payee,
+                    Memo = x.Row.Memo,
+                    Approved = false,
+                    Cleared = "uncleared",
+                    ImportId = x.ImportId,
+                }).ToList(), cancellationToken).GetAwaiter().GetResult();
+            }
+
+            return JsonSerializer.Serialize(new
+            {
+                account = new { id = account.Id, name = account.Name },
+                source = parsed.Source,
+                dryRun,
+                milesPerRand,
+                totalInFile = parsed.Rows.Count,
+                skippedCount = parsed.SkippedRows.Count,
+                matchedCount = matched.Count,
+                createdCount = created?.Count ?? drafts.Count,
+                detectedColumns = new
+                {
+                    date = parsed.DateColumn,
+                    miles = parsed.MilesColumn,
+                    description = parsed.DescriptionColumn,
+                    additionalInformation = parsed.AdditionalInfoColumn,
+                },
+                matchedTransactions = matched,
+                createdTransactions = (created ?? []).Select(t => new
+                {
+                    id = t.Id,
+                    date = t.Date,
+                    amount = FromMilliunits(t.Amount),
+                    payeeName = t.PayeeName,
+                    memo = t.Memo,
+                    importId = t.ImportId,
+                }),
+                wouldCreateTransactions = created is null
+                    ? drafts.Select(x => new
+                    {
+                        date = x.Row.Date.ToString("yyyy-MM-dd"),
+                        miles = x.Row.Miles,
+                        amount = RandAmount(x.Row),
+                        payee = x.Row.Payee,
+                        memo = x.Row.Memo,
+                        importId = x.ImportId,
+                    })
+                    : null,
+                skippedRows = parsed.SkippedRows.Take(20).ToList(),
+            }, JsonOptions);
+        });
+    }
+
     private static bool MatchesIdOrName(string? filter, string? id, string? name) =>
         string.IsNullOrWhiteSpace(filter) ||
         (id is not null && string.Equals(filter, id, StringComparison.OrdinalIgnoreCase)) ||
