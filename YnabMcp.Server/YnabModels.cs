@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Text.Json.Serialization;
 
 namespace YnabMcp.Server;
@@ -219,6 +220,37 @@ public sealed class Transaction
 
     [JsonPropertyName("deleted")]
     public bool Deleted { get; set; }
+
+    [JsonPropertyName("subtransactions")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<SubTransaction>? SubTransactions { get; set; }
+}
+
+public sealed class SubTransaction
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("amount")]
+    public long Amount { get; set; }
+
+    [JsonPropertyName("memo")]
+    public string? Memo { get; set; }
+
+    [JsonPropertyName("payee_id")]
+    public string? PayeeId { get; set; }
+
+    [JsonPropertyName("payee_name")]
+    public string? PayeeName { get; set; }
+
+    [JsonPropertyName("category_id")]
+    public string? CategoryId { get; set; }
+
+    [JsonPropertyName("category_name")]
+    public string? CategoryName { get; set; }
+
+    [JsonPropertyName("transfer_account_id")]
+    public string? TransferAccountId { get; set; }
 }
 
 public sealed class MonthWrapper
@@ -257,13 +289,16 @@ public sealed class Month
 public sealed class TransactionDraft
 {
     [JsonPropertyName("account_id")]
-    public string AccountId { get; set; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AccountId { get; set; }
 
     [JsonPropertyName("date")]
-    public string Date { get; set; } = string.Empty;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Date { get; set; }
 
     [JsonPropertyName("amount")]
-    public long Amount { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? Amount { get; set; }
 
     [JsonPropertyName("payee_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -286,11 +321,61 @@ public sealed class TransactionDraft
     public string? Cleared { get; set; }
 
     [JsonPropertyName("approved")]
-    public bool Approved { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Approved { get; set; }
 
     [JsonPropertyName("import_id")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ImportId { get; set; }
+
+    [JsonPropertyName("subtransactions")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<SubTransactionDraft>? SubTransactions { get; set; }
+}
+
+public sealed class SubTransactionDraft
+{
+    [JsonPropertyName("amount")]
+    public long Amount { get; set; }
+
+    [JsonPropertyName("category_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CategoryId { get; set; }
+
+    [JsonPropertyName("payee_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PayeeId { get; set; }
+
+    [JsonPropertyName("payee_name")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PayeeName { get; set; }
+
+    [JsonPropertyName("memo")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Memo { get; set; }
+}
+
+public sealed class SplitAllocation
+{
+    [JsonPropertyName("categoryId")]
+    [Description("Category id for the split line (from search_categories)")]
+    public string? CategoryId { get; set; }
+
+    [JsonPropertyName("amount")]
+    [Description("Amount in currency units; negative for outflow")]
+    public decimal Amount { get; set; }
+
+    [JsonPropertyName("payeeId")]
+    [Description("Payee id for the split line (optional)")]
+    public string? PayeeId { get; set; }
+
+    [JsonPropertyName("payeeName")]
+    [Description("Payee name for the split line (optional)")]
+    public string? PayeeName { get; set; }
+
+    [JsonPropertyName("memo")]
+    [Description("Memo for the split line (optional)")]
+    public string? Memo { get; set; }
 }
 
 public sealed class CreateTransactionRequest
@@ -303,4 +388,10 @@ public sealed class CreateTransactionsRequest
 {
     [JsonPropertyName("transactions")]
     public List<TransactionDraft> Transactions { get; set; } = [];
+}
+
+public sealed class UpdateTransactionRequest
+{
+    [JsonPropertyName("transaction")]
+    public TransactionDraft Transaction { get; set; } = new();
 }

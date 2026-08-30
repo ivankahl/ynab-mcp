@@ -108,7 +108,7 @@ public static class YnabTools
     }
 
     [McpServerTool]
-    [Description("Creates a transaction in a budget. Amount is in currency units: positive for inflow, negative for outflow (e.g. -25.50 for a $25.50 expense). Provide either payeeId or payeeName. CategoryId is required for on-budget expenses and can be found with search_categories.")]
+    [Description("Creates a transaction in a budget. Amount is in currency units: positive for inflow, negative for outflow (e.g. -25.50 for a $25.50 expense). Provide either payeeId or payeeName. CategoryId is required for on-budget expenses and can be found with search_categories. To create a split transaction, pass splits; the parent categoryId is then ignored and the parent amount must equal the sum of the split allocations.")]
     public static string CreateTransaction(
         YnabClient ynab,
         [Description("The budget id (from list_budgets), 'last-used' or 'default'")] string budgetId,
@@ -117,33 +117,129 @@ public static class YnabTools
         [Description("Amount in currency units; positive for inflow, negative for outflow")] decimal amount,
         [Description("Payee id (from search_payees). Optional if payeeName is given")] string? payeeId = null,
         [Description("Payee name. Used when there is no payee id")] string? payeeName = null,
-        [Description("Category id (from search_categories). Optional for inflows and transfers")] string? categoryId = null,
+        [Description("Category id (from search_categories). Optional for inflows and transfers; ignored when splits are provided")] string? categoryId = null,
         [Description("Transaction memo. Optional")] string? memo = null,
         [Description("Whether the transaction is approved (default true)")] bool approved = true,
         [Description("Cleared status: 'cleared', 'uncleared' or 'reconciled' (default 'uncleared')")] string cleared = "uncleared",
+        [Description("Split allocations: each entry needs categoryId and amount (currency units). When provided the transaction becomes a split and categoryId on the parent is ignored.")] IReadOnlyList<SplitAllocation>? splits = null,
         CancellationToken cancellationToken = default)
     {
         return Execute(() =>
         {
+            List<SubTransactionDraft>? subtransactions = null;
+            if (splits is { Count: > 0 })
+            {
+                var (error, built) = BuildSubTransactions(splits, amount);
+                if (error is not null)
+                {
+                    return JsonSerializer.Serialize(new { error = error }, JsonOptions);
+                }
+
+                subtransactions = built;
+                categoryId = null;
+            }
+
             var transaction = ynab.CreateTransactionAsync(
-                budgetId, accountId, date, amount, payeeId, payeeName, categoryId, memo, approved, cleared,
+                budgetId, accountId, date, amount, payeeId, payeeName, categoryId, memo, approved, cleared, subtransactions,
                 cancellationToken).GetAwaiter().GetResult();
 
             return JsonSerializer.Serialize(new
             {
                 created = true,
-                transaction = new
+                transaction = ProjectTransaction(transaction),
+            }, JsonOptions);
+        });
+    }
+
+    [McpServerTool]
+    [Description("Deletes (soft-deletes) a transaction in a budget. Returns the deleted transaction details including its id, date, amount and subtransactions if it was a split.")]
+    public static string DeleteTransaction(
+        YnabClient ynab,
+        [Description("The budget id (from list_budgets), 'last-used' or 'default'")] string budgetId,
+        [Description("The transaction id to delete")] string transactionId,
+        CancellationToken cancellationToken)
+    {
+        return Execute(() =>
+        {
+            var transaction = ynab.DeleteTransactionAsync(budgetId, transactionId, cancellationToken).GetAwaiter().GetResult();
+            return JsonSerializer.Serialize(new
+            {
+                deleted = true,
+                transactionId = transaction.Id,
+                transaction = ProjectTransaction(transaction),
+            }, JsonOptions);
+        });
+    }
+
+    [McpServerTool]
+    [Description("Updates an existing transaction in a budget. Only the provided fields are changed. Amounts are in currency units. To convert a non-split transaction into a split, pass splits; this sets categoryId to null on the parent and creates subtransactions. Updating subtransactions on an already-split transaction is not supported by YNAB and will return an error. YNAB ignores attempts to change the parent date or amount on a split transaction.")]
+    public static string UpdateTransaction(
+        YnabClient ynab,
+        [Description("The budget id (from list_budgets), 'last-used' or 'default'")] string budgetId,
+        [Description("The transaction id to update")] string transactionId,
+        [Description("The account id to move the transaction to (optional)")] string? accountId = null,
+        [Description("New transaction date (YYYY-MM-DD). Ignored by YNAB if the transaction is a split.")] DateTime? date = null,
+        [Description("New amount in currency units. Ignored by YNAB if the transaction is a split.")] decimal? amount = null,
+        [Description("New payee id (optional)")] string? payeeId = null,
+        [Description("New payee name (optional)")] string? payeeName = null,
+        [Description("New category id (optional). Ignored when splits are provided.")] string? categoryId = null,
+        [Description("New memo (optional)")] string? memo = null,
+        [Description("New approved state (optional)")] bool? approved = null,
+        [Description("New cleared status: 'cleared', 'uncleared' or 'reconciled' (optional)")] string? cleared = null,
+        [Description("Split allocations to convert this transaction into a split. Not allowed if the transaction is already a split.")] IReadOnlyList<SplitAllocation>? splits = null,
+        CancellationToken cancellationToken = default)
+    {
+        return Execute(() =>
+        {
+            if (cleared is not null && !new[] { "cleared", "uncleared", "reconciled" }.Contains(cleared, StringComparer.OrdinalIgnoreCase))
+            {
+                return JsonSerializer.Serialize(new { error = "cleared must be 'cleared', 'uncleared' or 'reconciled'." }, JsonOptions);
+            }
+
+            var existing = ynab.GetTransactionAsync(budgetId, transactionId, cancellationToken).GetAwaiter().GetResult();
+            var isSplit = existing.SubTransactions is { Count: > 0 };
+
+            if (splits is { Count: > 0 } && isSplit)
+            {
+                return JsonSerializer.Serialize(new
                 {
-                    id = transaction.Id,
-                    date = transaction.Date,
-                    amount = FromMilliunits(transaction.Amount),
-                    accountName = transaction.AccountName,
-                    payeeName = transaction.PayeeName,
-                    categoryName = transaction.CategoryName,
-                    cleared = transaction.Cleared,
-                    approved = transaction.Approved,
-                    memo = transaction.Memo,
-                },
+                    error = "Splits of an existing split transaction cannot be updated by the YNAB API. Update the individual fields, or delete and recreate the transaction to change its split allocations.",
+                }, JsonOptions);
+            }
+
+            List<SubTransactionDraft>? subtransactions = null;
+            if (splits is { Count: > 0 })
+            {
+                var (error, built) = BuildSubTransactions(splits, amount);
+                if (error is not null)
+                {
+                    return JsonSerializer.Serialize(new { error = error }, JsonOptions);
+                }
+
+                subtransactions = built;
+                categoryId = null;
+                amount = built.Sum(s => YnabClient.ToMilliunits(s.Amount) / 1000m); // currency units sum
+            }
+
+            var draft = new TransactionDraft
+            {
+                AccountId = accountId,
+                Date = date?.ToString("yyyy-MM-dd"),
+                Amount = amount.HasValue ? YnabClient.ToMilliunits(amount.Value) : null,
+                PayeeId = payeeId,
+                PayeeName = payeeName,
+                CategoryId = categoryId,
+                Memo = memo,
+                Approved = approved,
+                Cleared = cleared,
+                SubTransactions = subtransactions,
+            };
+
+            var transaction = ynab.UpdateTransactionAsync(budgetId, transactionId, draft, cancellationToken).GetAwaiter().GetResult();
+            return JsonSerializer.Serialize(new
+            {
+                updated = true,
+                transaction = ProjectTransaction(transaction),
             }, JsonOptions);
         });
     }
@@ -550,6 +646,62 @@ public static class YnabTools
         string.IsNullOrWhiteSpace(filter) ||
         (id is not null && string.Equals(filter, id, StringComparison.OrdinalIgnoreCase)) ||
         (name is not null && name.Contains(filter, StringComparison.OrdinalIgnoreCase));
+
+    private static (string? Error, List<SubTransactionDraft> SubTransactions) BuildSubTransactions(IReadOnlyList<SplitAllocation> splits, decimal? expectedAmount = null)
+    {
+        var subtransactions = new List<SubTransactionDraft>(splits.Count);
+        var sum = 0m;
+
+        foreach (var split in splits)
+        {
+            if (split.Amount == 0m)
+            {
+                return ("Each split allocation must have a non-zero amount.", []);
+            }
+
+            if (string.IsNullOrWhiteSpace(split.CategoryId))
+            {
+                return ("Each split allocation must have a categoryId.", []);
+            }
+
+            sum += split.Amount;
+            subtransactions.Add(new SubTransactionDraft
+            {
+                Amount = YnabClient.ToMilliunits(split.Amount),
+                CategoryId = split.CategoryId,
+                PayeeId = split.PayeeId,
+                PayeeName = split.PayeeName,
+                Memo = split.Memo,
+            });
+        }
+
+        if (expectedAmount.HasValue && sum != expectedAmount.Value)
+        {
+            return ($"Split allocations sum to {sum} but the transaction amount is {expectedAmount.Value}. Pass the correct total or omit the amount.", []);
+        }
+
+        return (null, subtransactions);
+    }
+
+    private static object ProjectTransaction(Transaction transaction) => new
+    {
+        id = transaction.Id,
+        date = transaction.Date,
+        amount = FromMilliunits(transaction.Amount),
+        accountName = transaction.AccountName,
+        payeeName = transaction.PayeeName,
+        categoryName = transaction.CategoryName,
+        cleared = transaction.Cleared,
+        approved = transaction.Approved,
+        memo = transaction.Memo,
+        subtransactions = transaction.SubTransactions?.Select(s => new
+        {
+            id = s.Id,
+            amount = FromMilliunits(s.Amount),
+            categoryName = s.CategoryName,
+            memo = s.Memo,
+        }),
+    };
 
     private static string Execute(Func<string> action)
     {

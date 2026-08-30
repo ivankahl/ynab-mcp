@@ -69,6 +69,13 @@ public sealed class YnabClient
         return response.Data.Transactions ?? [];
     }
 
+    public async Task<Transaction> GetTransactionAsync(string budgetId, string transactionId, CancellationToken ct = default)
+    {
+        var response = await GetAsync<YnabResponse<TransactionList>>($"budgets/{budgetId}/transactions/{transactionId}", ct);
+        return response.Data.Transaction
+            ?? throw new YnabException($"Transaction '{transactionId}' was not found.");
+    }
+
     public async Task<Transaction> CreateTransactionAsync(
         string budgetId,
         string accountId,
@@ -80,6 +87,7 @@ public sealed class YnabClient
         string? memo,
         bool approved,
         string cleared,
+        IReadOnlyList<SubTransactionDraft>? subtransactions = null,
         CancellationToken ct = default)
     {
         var draft = new TransactionDraft
@@ -93,6 +101,7 @@ public sealed class YnabClient
             Memo = memo,
             Approved = approved,
             Cleared = cleared,
+            SubTransactions = subtransactions?.ToList(),
         };
 
         var response = await PostAsync<YnabResponse<TransactionList>>(
@@ -117,6 +126,34 @@ public sealed class YnabClient
         }
 
         return created;
+    }
+
+    public async Task<Transaction> UpdateTransactionAsync(string budgetId, string transactionId, TransactionDraft draft, CancellationToken ct = default)
+    {
+        var response = await PutAsync<YnabResponse<TransactionList>>(
+            $"budgets/{budgetId}/transactions/{transactionId}",
+            new UpdateTransactionRequest { Transaction = draft },
+            ct);
+
+        return response.Data.Transaction
+            ?? throw new YnabException("YNAB did not return the updated transaction.");
+    }
+
+    public async Task<Transaction> DeleteTransactionAsync(string budgetId, string transactionId, CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await DeleteAsync<YnabResponse<TransactionList>>(
+                $"budgets/{budgetId}/transactions/{transactionId}",
+                ct);
+
+            return response.Data.Transaction
+                ?? throw new YnabException($"Transaction '{transactionId}' was not found.");
+        }
+        catch (YnabException ex) when (ex.Message.Contains("404", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new YnabException($"Transaction '{transactionId}' was not found.");
+        }
     }
 
     public async Task<Month> GetMonthAsync(string budgetId, string month, CancellationToken ct = default)
@@ -175,6 +212,18 @@ public sealed class YnabClient
     private async Task<T> PostAsync<T>(string path, object body, CancellationToken ct)
     {
         using var response = await _http.PostAsJsonAsync(path, body, JsonOptions, ct);
+        return await ReadAsync<T>(response, ct);
+    }
+
+    private async Task<T> PutAsync<T>(string path, object body, CancellationToken ct)
+    {
+        using var response = await _http.PutAsJsonAsync(path, body, JsonOptions, ct);
+        return await ReadAsync<T>(response, ct);
+    }
+
+    private async Task<T> DeleteAsync<T>(string path, CancellationToken ct)
+    {
+        using var response = await _http.DeleteAsync(path, ct);
         return await ReadAsync<T>(response, ct);
     }
 
