@@ -232,10 +232,68 @@ public sealed class YnabClient
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(ct);
-            throw new YnabException($"YNAB API request failed with {(int)response.StatusCode} {response.StatusCode}: {body}");
+            throw new YnabException(DescribeFailure(response, body));
         }
 
         return await response.Content.ReadFromJsonAsync<T>(JsonOptions, ct)
             ?? throw new YnabException("YNAB API returned an empty response.");
     }
+
+    private static string DescribeFailure(HttpResponseMessage response, string body)
+    {
+        var status = (int)response.StatusCode;
+        string? name = null;
+        string? detail = null;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("error", out var error))
+            {
+                if (error.TryGetProperty("name", out var n))
+                {
+                    name = n.GetString();
+                }
+
+                if (error.TryGetProperty("detail", out var d))
+                {
+                    detail = d.GetString();
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // Body was not JSON; fall through with name/detail unset.
+        }
+
+        var summary = detail is not null
+            ? $"YNAB API error {status} ({name ?? response.StatusCode.ToString()}): {detail}."
+            : $"YNAB API error {status} ({name ?? response.StatusCode.ToString()}).";
+
+        return $"{summary}{FailureHint(status, detail)} Raw YNAB response: {body}";
+    }
+
+    private static string FailureHint(int status, string? detail) => (status, detail) switch
+    {
+        (400, not null) when detail.Contains("sum of subtransaction amounts", StringComparison.OrdinalIgnoreCase)
+            => " The parent amount must equal the exact sum of the split amounts (same sign). Fix the amount or the splits and retry.",
+        (400, not null) when detail.Contains("must be formatted as a uuid", StringComparison.OrdinalIgnoreCase)
+            => " Ids must be UUIDs, not names — look up the correct id with list_budgets, search_accounts, search_categories or search_payees.",
+        (400, not null) when detail.Contains("subtransactions", StringComparison.OrdinalIgnoreCase)
+            => " Check the splits: each line needs a categoryId from search_categories and a non-zero amount, and the split amounts must sum to the parent amount.",
+        (400, _)
+            => " The request was malformed — check parameter formats (ids are UUIDs, date is YYYY-MM-DD, amounts are in currency units).",
+        (401, _)
+            => " The YNAB access token is missing or invalid — send a valid token as the Authorization bearer header.",
+        (403, _)
+            => " The YNAB access token does not have access to this budget.",
+        (404, _)
+            => " The budget or entity id was not found — verify the ids with list_budgets and the search_* tools.",
+        (409, _)
+            => " Conflict — usually a duplicate import_id, meaning the transaction already exists; search_transactions to find it.",
+        (429, _)
+            => " YNAB rate limit reached — wait a few seconds and retry.",
+        (>= 500, _)
+            => " YNAB is having server issues — retry shortly.",
+        _ => "",
+    };
 }
