@@ -33,8 +33,8 @@ public static class YnabTools
     public static string SearchPayees(
         YnabClient ynab,
         [Description("The budget id (from list_budgets), 'last-used' or 'default'")] string budgetId,
-        [Description("Free text search query; empty returns all payees")] string? searchText,
-        CancellationToken cancellationToken)
+        [Description("Free text search query; empty or omitted returns all payees")] string? searchText = null,
+        CancellationToken cancellationToken = default)
     {
         return Execute(() =>
         {
@@ -52,7 +52,7 @@ public static class YnabTools
     public static string SearchAccounts(
         YnabClient ynab,
         [Description("The budget id (from list_budgets), 'last-used' or 'default'")] string budgetId,
-        [Description("Free text search query; empty returns all accounts")] string? searchText,
+        [Description("Free text search query; empty or omitted returns all accounts")] string? searchText = null,
         [Description("Include closed accounts (default false)")] bool includeClosed = false,
         CancellationToken cancellationToken = default)
     {
@@ -82,7 +82,7 @@ public static class YnabTools
     public static string SearchCategories(
         YnabClient ynab,
         [Description("The budget id (from list_budgets), 'last-used' or 'default'")] string budgetId,
-        [Description("Free text search query; empty returns all categories")] string? searchText,
+        [Description("Free text search query; empty or omitted returns all categories")] string? searchText = null,
         [Description("Include hidden categories (default false)")] bool includeHidden = false,
         CancellationToken cancellationToken = default)
     {
@@ -108,20 +108,20 @@ public static class YnabTools
     }
 
     [McpServerTool]
-    [Description("Creates a transaction in a budget. Amount is in currency units: positive for inflow, negative for outflow (e.g. -25.50 for a $25.50 expense). Provide either payeeId or payeeName. CategoryId is required for on-budget expenses and can be found with search_categories. To create a split transaction, pass splits; the parent categoryId is then ignored and the parent amount must equal the sum of the split allocations.")]
+    [Description("Creates a transaction in a budget. Amounts are in currency units: negative = outflow/expense, positive = inflow (e.g. -25.50 for a $25.50 expense). Provide either payeeId or payeeName. categoryId is required for on-budget expenses (an envelope category id from search_categories); it is optional for inflows and transfers. SPLIT TRANSACTIONS: to divide one transaction across categories, pass splits — an array of objects, one per split line: {\"categoryId\": \"<guid>\", \"amount\": <number>, \"payeeId\"?: \"<guid>\", \"payeeName\"?: \"<string>\", \"memo\"?: \"<string>\"}. Rules: (1) every split line needs a categoryId (usually an envelope category from search_categories; YNAB silently files an unknown id as Uncategorized) and a non-zero amount with the same sign convention as the parent; (2) the parent amount is still required and must equal the exact sum of the split amounts or the call fails; (3) the parent categoryId is ignored/cleared and YNAB shows the transaction as 'Split'.")]
     public static string CreateTransaction(
         YnabClient ynab,
         [Description("The budget id (from list_budgets), 'last-used' or 'default'")] string budgetId,
         [Description("The account id to create the transaction in (from search_accounts)")] string accountId,
         [Description("Transaction date in YYYY-MM-DD format")] DateTime date,
-        [Description("Amount in currency units; positive for inflow, negative for outflow")] decimal amount,
+        [Description("Amount in currency units; negative = outflow/expense, positive = inflow. When splits are given, must equal the exact sum of the split amounts")] decimal amount,
         [Description("Payee id (from search_payees). Optional if payeeName is given")] string? payeeId = null,
         [Description("Payee name. Used when there is no payee id")] string? payeeName = null,
         [Description("Category id (from search_categories). Optional for inflows and transfers; ignored when splits are provided")] string? categoryId = null,
         [Description("Transaction memo. Optional")] string? memo = null,
         [Description("Whether the transaction is approved (default true)")] bool approved = true,
         [Description("Cleared status: 'cleared', 'uncleared' or 'reconciled' (default 'uncleared')")] string cleared = "uncleared",
-        [Description("Split allocations: each entry needs categoryId and amount (currency units). When provided the transaction becomes a split and categoryId on the parent is ignored.")] IReadOnlyList<SplitAllocation>? splits = null,
+        [Description("Split lines making this a split transaction: an array of objects, each {\"categoryId\": \"<envelope category guid from search_categories>\" (required), \"amount\": <currency units, negative = outflow, positive = inflow; required and non-zero>, \"payeeId\": \"<optional payee guid>\", \"payeeName\": \"<optional payee name>\", \"memo\": \"<optional memo>\"}. The split amounts must sum exactly to the parent amount, and the parent categoryId is ignored when splits are provided.")] IReadOnlyList<SplitAllocation>? splits = null,
         CancellationToken cancellationToken = default)
     {
         return Execute(() =>
@@ -172,21 +172,21 @@ public static class YnabTools
     }
 
     [McpServerTool]
-    [Description("Updates an existing transaction in a budget. Only the provided fields are changed. Amounts are in currency units. To convert a non-split transaction into a split, pass splits; this sets categoryId to null on the parent and creates subtransactions. Updating subtransactions on an already-split transaction is not supported by YNAB and will return an error. YNAB ignores attempts to change the parent date or amount on a split transaction.")]
+    [Description("Updates an existing transaction in a budget. Only the provided fields are changed. Amounts are in currency units: negative = outflow/expense, positive = inflow. To convert a non-split transaction into a split, pass splits — an array of {\"categoryId\": \"<guid>\", \"amount\": <number>, \"payeeId\"?: \"<guid>\", \"payeeName\"?: \"<string>\", \"memo\"?: \"<string>\"} objects, same format as create_transaction: every split line needs a categoryId (from search_categories) and a non-zero amount, and the split amounts must sum to the transaction amount (if amount is omitted it is set to the splits sum). The parent categoryId is cleared when converting. Updating the splits of an already-split transaction is not supported by YNAB and returns an error — delete and recreate the transaction to change existing split allocations. YNAB ignores attempts to change the parent date or amount on a split transaction.")]
     public static string UpdateTransaction(
         YnabClient ynab,
         [Description("The budget id (from list_budgets), 'last-used' or 'default'")] string budgetId,
         [Description("The transaction id to update")] string transactionId,
         [Description("The account id to move the transaction to (optional)")] string? accountId = null,
         [Description("New transaction date (YYYY-MM-DD). Ignored by YNAB if the transaction is a split.")] DateTime? date = null,
-        [Description("New amount in currency units. Ignored by YNAB if the transaction is a split.")] decimal? amount = null,
+        [Description("New amount in currency units (negative = outflow, positive = inflow). Ignored by YNAB if the transaction is a split. When converting to a split, must equal the sum of the splits; omit to use the splits sum.")] decimal? amount = null,
         [Description("New payee id (optional)")] string? payeeId = null,
         [Description("New payee name (optional)")] string? payeeName = null,
         [Description("New category id (optional). Ignored when splits are provided.")] string? categoryId = null,
         [Description("New memo (optional)")] string? memo = null,
         [Description("New approved state (optional)")] bool? approved = null,
         [Description("New cleared status: 'cleared', 'uncleared' or 'reconciled' (optional)")] string? cleared = null,
-        [Description("Split allocations to convert this transaction into a split. Not allowed if the transaction is already a split.")] IReadOnlyList<SplitAllocation>? splits = null,
+        [Description("Split lines to convert this transaction into a split: an array of objects, each {\"categoryId\": \"<envelope category guid from search_categories>\" (required), \"amount\": <currency units, negative = outflow, positive = inflow; required and non-zero>, \"payeeId\": \"<optional payee guid>\", \"payeeName\": \"<optional payee name>\", \"memo\": \"<optional memo>\"}. Not allowed if the transaction is already a split — delete and recreate it to change split allocations.")] IReadOnlyList<SplitAllocation>? splits = null,
         CancellationToken cancellationToken = default)
     {
         return Execute(() =>
@@ -218,7 +218,7 @@ public static class YnabTools
 
                 subtransactions = built;
                 categoryId = null;
-                amount = built.Sum(s => YnabClient.ToMilliunits(s.Amount) / 1000m); // currency units sum
+                amount = built.Sum(s => s.Amount) / 1000m; // SubTransactionDraft.Amount is already in milliunits; parent amount = exact milliunit sum of the splits
             }
 
             var draft = new TransactionDraft
@@ -593,16 +593,22 @@ public static class YnabTools
         var subtransactions = new List<SubTransactionDraft>(splits.Count);
         var sum = 0m;
 
-        foreach (var split in splits)
+        for (var i = 0; i < splits.Count; i++)
         {
+            var split = splits[i];
+            if (split is null)
+            {
+                return ($"splits[{i}] is null; each split line must be an object like {{\"categoryId\": \"<guid from search_categories>\", \"amount\": -12.34}} with a categoryId and a non-zero amount.", []);
+            }
+
             if (split.Amount == 0m)
             {
-                return ("Each split allocation must have a non-zero amount.", []);
+                return ($"splits[{i}] has amount 0; every split line needs a non-zero amount in currency units (negative = outflow, positive = inflow).", []);
             }
 
             if (string.IsNullOrWhiteSpace(split.CategoryId))
             {
-                return ("Each split allocation must have a categoryId.", []);
+                return ($"splits[{i}] is missing a categoryId; each split line needs a categoryId (an envelope category id from search_categories).", []);
             }
 
             sum += split.Amount;
@@ -618,7 +624,7 @@ public static class YnabTools
 
         if (expectedAmount.HasValue && sum != expectedAmount.Value)
         {
-            return ($"Split allocations sum to {sum} but the transaction amount is {expectedAmount.Value}. Pass the correct total or omit the amount.", []);
+            return ($"The splits sum to {sum:0.00#} but the transaction amount is {expectedAmount.Value:0.00#}; the parent amount must equal the exact sum of the split amounts. Fix the amount or the splits (on update_transaction you can omit amount to use the splits sum).", []);
         }
 
         return (null, subtransactions);

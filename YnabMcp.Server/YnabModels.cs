@@ -358,23 +358,23 @@ public sealed class SubTransactionDraft
 public sealed class SplitAllocation
 {
     [JsonPropertyName("categoryId")]
-    [Description("Category id for the split line (from search_categories)")]
+    [Description("Required. Category (envelope) id for this split line, from search_categories. Split lines usually target envelope categories; YNAB silently files an unknown id as Uncategorized.")]
     public string? CategoryId { get; set; }
 
     [JsonPropertyName("amount")]
-    [Description("Amount in currency units; negative for outflow")]
+    [Description("Required, non-zero. Amount in currency units: negative = outflow/expense, positive = inflow. All split amounts must sum exactly to the parent transaction amount.")]
     public decimal Amount { get; set; }
 
     [JsonPropertyName("payeeId")]
-    [Description("Payee id for the split line (optional)")]
+    [Description("Optional payee id for this split line (from search_payees).")]
     public string? PayeeId { get; set; }
 
     [JsonPropertyName("payeeName")]
-    [Description("Payee name for the split line (optional)")]
+    [Description("Optional payee name for this split line (used when there is no payeeId).")]
     public string? PayeeName { get; set; }
 
     [JsonPropertyName("memo")]
-    [Description("Memo for the split line (optional)")]
+    [Description("Optional memo for this split line.")]
     public string? Memo { get; set; }
 }
 
